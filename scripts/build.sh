@@ -20,6 +20,47 @@ DEFCONFIG_PATH="${KERNEL_DIR}/arch/${ARCH}/configs/${KERNEL_CONFIG}"
 
 prepare_defconfig() {
 	group "Preparing defconfig"
+
+	# OnePlus/OPPO OSS trees `source` Kconfig paths that only exist in the
+	# closed-source vendor tree (e.g. block/oplus_foreground_io_opt/Kconfig).
+	# kconfig ignores the `#ifdef OPLUS_FEATURE_*` guards and tries to open the
+	# missing file, so defconfig generation dies with
+	#   can't open file "block/oplus_foreground_io_opt/Kconfig"
+	# Comment out every `source <path>` whose target is absent from the OSS tree.
+	# Safe: a source line to a nonexistent file can never resolve anyway.
+	python3 - "$KERNEL_DIR" <<'PYFIX'
+import os, re, sys, glob
+root = sys.argv[1]
+pat = re.compile(r'^(\s*)source\s+(\S+)')
+fixed = 0
+for dirpath, _, files in os.walk(root):
+    for fn in files:
+        if not fn.startswith('Kconfig'):
+            continue
+        path = os.path.join(dirpath, fn)
+        try:
+            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                lines = f.readlines()
+        except OSError:
+            continue
+        out, changed = [], False
+        for ln in lines:
+            m = pat.match(ln)
+            if m:
+                tgt = m.group(2).strip().strip('"')
+                if not os.path.exists(os.path.join(root, tgt)) and \
+                   not os.path.exists(os.path.join(dirpath, tgt)):
+                    out.append('# [oss-missing] ' + ln)
+                    changed = True
+                    continue
+            out.append(ln)
+        if changed:
+            with open(path, 'w', encoding='utf-8', errors='replace') as f:
+                f.writelines(out)
+            fixed += 1
+print(f"[*] oss-missing Kconfig sources commented in {fixed} file(s)")
+PYFIX
+
 	[ -f "$DEFCONFIG_PATH" ] \
 		|| die "defconfig not found: arch/${ARCH}/configs/${KERNEL_CONFIG}
        Available: $(ls "${KERNEL_DIR}/arch/${ARCH}/configs/" | head -20 | tr '\n' ' ')"
